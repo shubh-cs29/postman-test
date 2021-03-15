@@ -1,0 +1,1037 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+
+  DeploymentName:
+    Type: String
+    Default: v1
+
+  ApplicationName:
+    Type: String
+    Default: jupyter
+
+  BuildId:
+    Type: String
+    Default: "#{codepipeline.PipelineExecutionId}"
+  Branch:
+    Type: String
+    Default: master
+
+  VentureAdminRole:
+    Type: String
+    Default: VentureAdminRole
+
+  Repo:
+    Type: String
+    Default: bloom-apps
+
+  GitHubUser:
+    Type: String
+    Default: cldcvr-github-automation-bloomgit
+
+  OAuthToken:
+    Type: String
+    Default: 6d0ab4ddb2da7b1f90963da53b386072ec2d0ee2
+    NoEcho: true
+
+  Owner:
+    Type: String
+    Default: cldcvr
+
+  Username:
+    Type: String
+    Default: bastion-user
+
+  Password:
+    Type: String
+    Default: D4E8BEFF7AEE
+
+  VpcBlock:
+    Type: String
+    Default: 192.16.0.0/16
+    Description: The CIDR range for the VPC. This should be a valid private (RFC 1918) CIDR range.
+
+  PublicSubnet01Block:
+    Type: String
+    Default: 192.16.64.0/24
+    Description: CidrBlock for public subnet 01 within the VPC
+
+  PublicSubnet02Block:
+    Type: String
+    Default: 192.16.18.0/24
+    Description: CidrBlock for public subnet 02 within the VPC
+
+  PrivateSubnet01Block:
+    Type: String
+    Default: 192.16.0.0/24
+    Description: CidrBlock for private subnet 01 within the VPC
+
+  PrivateSubnet02Block:
+    Type: String
+    Default: 192.16.128.0/24
+    Description: CidrBlock for private subnet 02 within the VPC
+
+  AppPort:
+    Type: Number
+    Default: 8888
+    Description: Port on which notebook runs
+
+  NodeInstanceType:
+    Description: EC2 instance type for the node instances
+    Type: String
+    Default: t2.large
+    AllowedValues:
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - m5.12xlarge
+      - m5.24xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+      - i3.large
+      - i3.xlarge
+      - i3.2xlarge
+      - i3.4xlarge
+      - i3.8xlarge
+      - i3.16xlarge
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+      - r4.large
+      - r4.xlarge
+      - r4.2xlarge
+      - r4.4xlarge
+      - r4.8xlarge
+      - r4.16xlarge
+      - x1.16xlarge
+      - x1.32xlarge
+      - p2.xlarge
+      - p2.8xlarge
+      - p2.16xlarge
+      - p3.2xlarge
+      - p3.8xlarge
+      - p3.16xlarge
+    ConstraintDescription: must be a valid EC2 instance type
+
+
+  NodeAutoScalingGroupMinSize:
+    Type: Number
+    Description: Minimum size of Node Group ASG.
+    Default: 1
+
+  NodeAutoScalingGroupMaxSize:
+    Type: Number
+    Description: Maximum size of Node Group ASG.
+    Default: 1
+
+  NodeGroupName:
+    Description: Unique identifier for the Node Group.
+    Type: String
+    Default: 'jupyter-node-group'
+
+  ECSContainerName:
+    Description: Name of the container
+    Type: String
+    Default: "jupyter-notebook"
+
+  MemoryRequirement:
+    Description: RAM requirement for ECS Task
+    Type: Number
+    Default: 4096
+
+  CpuRequirement:
+    Description: CPU requirement for ECS Task
+    Type: Number
+    Default: 2048
+
+  NoteBookToken:
+    Description: Jupyter Notebook token for auth
+    Type: String
+    Default: 91c666b5b40f4c040390c5fdeeaed6dad8f28437a3d04a2d
+
+Mappings:
+  RegionMap:
+    ap-southeast-1:
+      ECSAMIID: ami-0562e27aac95dcf60
+      AMZNLNX2AMIID: ami-0cd31be676780afa7
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: !Join ["-", [ !Ref ApplicationName, "worker-network-config" ] ]
+        Parameters:
+          - VpcBlock
+          - PublicSubnet01Block
+          - PublicSubnet02Block
+          - PrivateSubnet01Block
+          - PrivateSubnet02Block
+
+Resources:
+  ##################################################    VPC Stack   ######################################################
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:  !Ref VpcBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "vpc" ] ]
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+
+  VPCGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "pub-rtb" ] ]
+        - Key: Network
+          Value: Public
+
+  PrivateRouteTable01:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "priv-rtb-az1" ] ]
+        - Key: Network
+          Value: Private01
+
+  PrivateRouteTable02:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "priv-rtb-az2" ] ]
+        - Key: Network
+          Value: Private02
+
+  PublicRoute:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute01:
+    DependsOn:
+      - VPCGatewayAttachment
+      - NatGateway01
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable01
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway01
+
+  PrivateRoute02:
+    DependsOn:
+      - VPCGatewayAttachment
+      - NatGateway02
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable02
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway02
+
+  NatGateway01:
+    DependsOn:
+      - NatGatewayEIP1
+      - PublicSubnet01
+      - VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt 'NatGatewayEIP1.AllocationId'
+      SubnetId: !Ref PublicSubnet01
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "nat-gateway-az1" ] ]
+
+  NatGateway02:
+    DependsOn:
+      - NatGatewayEIP2
+      - PublicSubnet02
+      - VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt 'NatGatewayEIP2.AllocationId'
+      SubnetId: !Ref PublicSubnet02
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "nat-gateway-az2" ] ]
+
+  NatGatewayEIP1:
+    DependsOn:
+      - VPCGatewayAttachment
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+
+  NatGatewayEIP2:
+    DependsOn:
+      - VPCGatewayAttachment
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+
+  PublicSubnet01:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Public Subnet 01
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+          - '0'
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Ref: PublicSubnet01Block
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "pub-sub-az1" ] ]
+
+  PublicSubnet02:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Public Subnet 02
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+          - '1'
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Ref: PublicSubnet02Block
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "pub-sub-az2" ] ]
+
+  PrivateSubnet01:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Private Subnet 01
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '0'
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Ref: PrivateSubnet01Block
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "priv-sub-az1" ] ]
+
+  PrivateSubnet02:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Private Subnet 02
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - '1'
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Ref: PrivateSubnet02Block
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "priv-sub-az2" ] ]
+
+  PublicSubnet01RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet01
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet02RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet02
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet01RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet01
+      RouteTableId: !Ref PrivateRouteTable01
+
+  PrivateSubnet02RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet02
+      RouteTableId: !Ref PrivateRouteTable02
+
+  ############################################## VPC Endpoint and Secure S3 Bucket  #########################
+
+  S3Endpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - 's3:*'
+            Resource: "*"
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTable01
+        - !Ref PrivateRouteTable02
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref VPC
+
+  SecureBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket:
+        Ref: SecureS3Bucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:*'
+            Effect: Deny
+            Resource:
+              - !Sub 'arn:aws:s3:::${SecureS3Bucket}/*'
+              - !Sub 'arn:aws:s3:::${SecureS3Bucket}'
+            Principal: '*'
+            Condition:
+              StringNotEquals:
+                aws:sourceVpce:
+                  - !Sub '${S3Endpoint}'
+              ArnNotEquals:
+                aws:PrincipalArn:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/VentureAdminRole'
+
+  SecureS3Bucket:
+    Type: AWS::S3::Bucket
+  #    Properties:
+  #      BucketName: !Sub "data-${AWS::AccountId}-bucket"
+
+
+
+  ###############################  Security Groups  ##############################################################
+  LoadBalancerSecurityGroup:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "lb-sg" ] ]
+      GroupDescription: Load Balancer external Access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  ECStaskSecurityGroup:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "ecs-task-sg" ] ]
+      GroupDescription: ECS Tasks allow inbound access from the ALB only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  CLBSecurityGroupForBastion:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "clb-sg" ] ]
+      GroupDescription: Allow all for SSH in bastion
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+
+
+  BastionSecurityGroup:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "bastion-sg" ] ]
+      GroupDescription: Allow bastion access from whitelisted IPs only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt CLBSecurityGroupForBastion.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  Ec2InstanceSecurityGroup:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "instance-sg" ] ]
+      GroupDescription: Allow inbound access from the ALB only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt BastionSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  EFSSecurityGroup:
+    DependsOn:
+      - VPC
+      - InternetGateway
+      - VPCGatewayAttachment
+      - PublicRouteTable
+      - PrivateRouteTable01
+      - PrivateRouteTable02
+      - PublicRoute
+      - PrivateRoute01
+      - PrivateRoute02
+      - NatGateway01
+      - NatGateway02
+      - NatGatewayEIP1
+      - NatGatewayEIP2
+      - PublicSubnet01
+      - PublicSubnet02
+      - PrivateSubnet01
+      - PrivateSubnet02
+      - PublicSubnet01RouteTableAssociation
+      - PublicSubnet02RouteTableAssociation
+      - PrivateSubnet01RouteTableAssociation
+      - PrivateSubnet02RouteTableAssociation
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ["-", [ !Ref ApplicationName, "efs-sg" ] ]
+      GroupDescription: EFS to Allow inbound access for ec2 instances only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049 # NFS port
+          ToPort: 2049   # NFS port
+          SourceSecurityGroupId: !GetAtt ECStaskSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 2049 # NFS port
+          ToPort: 2049   # NFS port
+          SourceSecurityGroupId: !GetAtt Ec2InstanceSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+
+  ###############################  EC2 Instance Profile #################
+
+
+  S3AccessRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join ["-", [ !Ref ApplicationName, "s3-access-role" ] ]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Join ["-", [ !Ref ApplicationName, "s3-access-role-policy" ] ]
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:List*"
+                Resource:
+                  - !Sub 'arn:aws:s3:::${SecureS3Bucket}/*'
+                  - !Sub 'arn:aws:s3:::${SecureS3Bucket}'
+
+
+  S3InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref S3AccessRole
+
+  Ec2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref VentureAdminRole
+
+
+  ###############################  bastion for testing purposes only #################
+  BaseBastionInstance:
+    DependsOn:
+      - Ec2InstanceProfile
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMZNLNX2AMIID]  # Amazon Linux 2 ami
+      IamInstanceProfile: !Ref S3InstanceProfile
+      InstanceType: "t2.micro"
+      UserData: !Base64
+        "Fn::Sub": |
+          #!/bin/bash
+          sudo sed -i '/PasswordAuthentication/{s/no/yes/}' /etc/ssh/sshd_config
+          sudo systemctl restart sshd
+          sudo useradd ${Username}
+          echo ${Password} | sudo passwd ${Username} --stdin
+          echo '${Username}  ALL=(ALL:ALL) ALL' | sudo tee -a /etc/sudoers
+
+      Tags:
+        - Key: "Name"
+          Value: !Join ["-", [ !Ref ApplicationName, "bastion-server" ] ]
+      SecurityGroupIds:
+        - !GetAtt  "BastionSecurityGroup.GroupId"
+      SubnetId: !Ref PrivateSubnet01
+
+
+  #######################  Classic Load Balancer for Bastion ##########
+
+  ClassicLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    DependsOn:
+      - Ec2InstanceProfile
+    Properties:
+      LoadBalancerName: !Join ["-", [ !Ref ApplicationName, "lb" ] ]
+      Listeners:
+        - InstancePort: '22'
+          InstanceProtocol: TCP
+          LoadBalancerPort: '22'
+          Protocol: TCP
+      HealthCheck:
+        Target: TCP:22
+        HealthyThreshold: '2'
+        UnhealthyThreshold: '5'
+        Interval: '10'
+        Timeout: '5'
+      SecurityGroups:
+        - !Ref CLBSecurityGroupForBastion
+      Instances:
+        - !Ref BaseBastionInstance
+      Subnets:
+        - !Ref PublicSubnet01
+        - !Ref PublicSubnet02
+
+
+
+    ###############################  ECS Cluster ########################################
+
+  ECSCluster:
+    DependsOn:
+      - BaseBastionInstance
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Join ["-", [ !Ref ApplicationName, "ecs-cluster" ] ]
+      Tags:
+        - Key: project
+          Value: !Ref ApplicationName
+
+
+
+  ###############################  ASG and Launch Configuration ##########################
+
+  InstanceLaunchConfig:
+    DependsOn:
+      - ECSCluster
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      LaunchConfigurationName: !Join ["-", [ !Ref ApplicationName, "launch-config" ] ]
+      AssociatePublicIpAddress: 'true'
+      IamInstanceProfile: !Ref Ec2InstanceProfile
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", ECSAMIID]
+      InstanceType: !Ref NodeInstanceType
+      SecurityGroups:
+        - !Ref Ec2InstanceSecurityGroup
+      UserData: !Base64
+        "Fn::Sub": |
+          #!/bin/bash
+          echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCzA6ZB6IaTRDD1ezWs55TjQEyyRC6hJEE/2/JszcUiSDxlT1BuTK7CfkA+G6Fr8aIOw8Nidm27mFnH9ieWZldb2lewatLFz1uMySobz8ir3lLYKGeezbZ534jRGa8Lqjw4d5GC4e2x+c7K6junysYmevIPJGOQTy6dNjPZd1jSFsMfXkAMmbXLCtGAb3XF+hiuc9LyhxFVCJxxs6nwDbY//kEgoEMx1GI4iWjrUtyblwr7VV93gfK59esamw6br2CyR6gZtqZ89HWs9E8PvnQhLrDQb3Ae4rFW7EqwmP/lsM6Aw4ytbNZPXPayUBuQRX+aeJebQScLPFQnvab1Yel+hWhuwF7geNw+5RRA5EB6RxzVtpYDQQTc1KTxqajlK0ZMDUXAwxq34WNkPB27ZR6yuNN3MKG9AFjPRrlew5Et+LGsoGGTjOUP1AzB0etkGf7OxwmJqK6sgW/humF1tvUGdWpa37QQuSiKhVnf1RDlLkm1dV6txxb1Nx/WVR+HpBnGOz90j2PstiPuiVQyMysptGB6FnY4SGUsByBCcZurkSo0I3NqrU5tQM8UvPrb2M3C0GOyCMJ7sdyT5QpAAAtC5v0gWAJr/MBR2wTakISPa/Ve1/xRy/AFxHIgIYEbqCEQ+DJ/X6RUn7tZGtJD8TQ9NRiJKsWS71hGdA78zaGchQ== vibhorjain@Vibhor-Jain.domain.name" >> /home/ec2-user/.ssh/authorized_keys
+          sudo yum install -y amazon-efs-utils
+          cat << EOU >> /etc/ecs/ecs.config
+          ECS_CLUSTER=${ECSCluster}
+          AWS_DEFAULT_REGION=${AWS::Region}
+          EOU
+
+  TargetGroupJupyter:
+    DependsOn:
+      - ECSCluster
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Join ["-", [ !Ref ApplicationName, "tg" ] ]
+      VpcId: !Ref VPC
+      TargetType: instance
+      Port: !Ref AppPort
+      Protocol: HTTP
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 15
+      HealthCheckPath: /
+      HealthCheckPort: !Ref AppPort
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 4
+      Matcher:
+        HttpCode: 200,303,302
+
+  AutoScalingGroup:
+    DependsOn:
+      - ECSCluster
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: !Ref NodeAutoScalingGroupMaxSize
+      LaunchConfigurationName: !Ref InstanceLaunchConfig
+      MinSize: !Ref NodeAutoScalingGroupMinSize
+      MaxSize: !Ref NodeAutoScalingGroupMaxSize
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet02
+        - !Ref PrivateSubnet01
+      MetricsCollection:
+        - Granularity: "1Minute"
+          Metrics:
+            - "GroupMinSize"
+            - "GroupMaxSize"
+            - "GroupDesiredCapacity"
+            - "GroupInServiceInstances"
+            - "GroupPendingInstances"
+            - "GroupStandbyInstances"
+            - "GroupTerminatingInstances"
+            - "GroupTotalInstances"
+      TerminationPolicies:
+        - "OldestLaunchConfiguration"
+        - "Default"
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - "${ECSCluster}-${NodeGroupName}-Node"
+            - { Cluster: !Ref ECSCluster }
+          PropagateAtLaunch: 'true'
+      TargetGroupARNs:
+        - !Ref TargetGroupJupyter
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+
+
+  ###############################  Load Balancer ##########################
+
+  ListenerRule:
+    DependsOn:
+      - AutoScalingGroup
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupJupyter
+      Conditions:
+        - Field: http-request-method
+          HttpRequestMethodConfig:
+            Values:
+              - GET_OR_POST
+      ListenerArn: !Ref Listener
+      Priority: 1
+
+  Listener:
+    DependsOn:
+      - AutoScalingGroup
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupJupyter
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  LoadBalancer:
+    DependsOn:
+      - AutoScalingGroup
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Join ["-", [ !Ref ApplicationName, "ecs-lb" ] ]
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: deletion_protection.enabled
+          Value: false
+      Subnets:
+        - !Ref PublicSubnet01
+        - !Ref PublicSubnet02
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+
+  ############################################ EFS #############################################
+
+  FileSystemResource:
+    DependsOn:
+      - LoadBalancer
+    Type: 'AWS::EFS::FileSystem'
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: !Join ["-", [ !Ref ApplicationName, "notebook-efs-volume" ] ]
+
+  MountTargetResource01:
+    DependsOn:
+      - LoadBalancer
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystemResource
+      SubnetId: !Ref PrivateSubnet02
+      SecurityGroups:
+        - !GetAtt EFSSecurityGroup.GroupId
+
+  MountTargetResource02:
+    DependsOn:
+      - LoadBalancer
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystemResource
+      SubnetId: !Ref PrivateSubnet01
+      SecurityGroups:
+        - !GetAtt EFSSecurityGroup.GroupId
+
+
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS name for Load Balancer
+    Value: !Sub "${LoadBalancer.DNSName}"
+
+  ECSCluster:
+    Description: Name of ECS Cluster
+    Value: !Ref ECSCluster
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-ECSCluster"
+
+  JupyterToken:
+    Description: Token to run Jupyter notebook
+    Value: !Ref NoteBookToken
+
+  S3BucketUrl:
+    Description: Ingress/Egress s3 bucket
+    Value: !Sub "s3://${SecureS3Bucket}"
+
+  BastionEndpoint:
+    Description: DNS name of Classic Load Balancer
+    Value: !GetAtt ClassicLoadBalancer.DNSName
+
+  SshUser:
+    Description: User to ssh in bastion instance
+    Value: !Ref Username
+
+  SshPassword:
+    Description: Password to ssh in bastion
+    Value: !Ref Password
+
+  FileSystemResource:
+    Value: !Ref FileSystemResource
+    Description: EFS Id
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-FileSystemResource"
+
+  TargetGroupArn:
+    Description: ARN of target group
+    Value: !Ref TargetGroupJupyter
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-TargetGroupArn"

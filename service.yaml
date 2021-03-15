@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  ApplicationName:
+    Type: String
+    Default: jupyter
+
+  ImageUrl:
+    Type: String
+
+  BuildId:
+    Type: String
+    Default: "#{codepipeline.PipelineExecutionId}"
+  Branch:
+    Type: String
+    Default: master
+
+  Repo:
+    Type: String
+    Default: bloom-apps
+
+  GitHubUser:
+    Type: String
+    Default: cldcvr-github-automation-bloomgit
+
+  OAuthToken:
+    Type: String
+    Default: 6d0ab4ddb2da7b1f90963da53b386072ec2d0ee2
+    NoEcho: true
+
+  Owner:
+    Type: String
+    Default: cldcvr
+
+  AppPort:
+    Type: Number
+    Default: 8888
+    Description: Port on which notebook runs
+
+
+  ECSContainerName:
+    Description: Name of the container
+    Type: String
+    Default: "jupyter-notebook"
+
+  MemoryRequirement:
+    Description: RAM requirement for ECS Task
+    Type: Number
+    Default: 4096
+
+  CpuRequirement:
+    Description: CPU requirement for ECS Task
+    Type: Number
+    Default: 2048
+
+  NoteBookToken:
+    Description: Jupyter Notebook token for auth
+    Type: String
+    Default: 91c666b5b40f4c040390c5fdeeaed6dad8f28437a3d04a2d
+
+
+
+
+Resources:
+
+  ############################ Log group ############################################
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/ecs/ec2/jupyter"
+      RetentionInDays: 30
+
+  ECSLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref ECSLogGroup
+      LogStreamName: !Join ["-", [ !Ref ApplicationName, "log-stream" ] ]
+
+  ###############################  ECS Task Execution Role ##########################
+
+  ECStaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ["-", [ !Ref ApplicationName, "ecs-task-execution-role" ] ]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: '/'
+      Policies:
+        - PolicyName: !Join ["-", [ !Ref ApplicationName, "ecs-task-execution-role-policy" ] ]
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:List*"
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+
+  ############################################ ECS Service and Task Definition ################
+
+  ECSTaskDefinition:
+    DependsOn:
+      - ECSLogStream
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities:
+        - "EC2"
+      Family: !Join ["-", [ !Ref ApplicationName, "notebook-task" ] ]
+      ExecutionRoleArn: !GetAtt ECStaskExecutionRole.Arn
+      NetworkMode: bridge
+      Cpu: !Ref CpuRequirement
+      Memory: !Ref MemoryRequirement
+      ContainerDefinitions:
+        - Name: !Ref ECSContainerName
+          MountPoints:
+            - SourceVolume: "jupyter-efs-volume"
+              ContainerPath: "/home/jovyan/work/"
+          PortMappings:
+            -
+              ContainerPort: !Ref AppPort
+              HostPort: !Ref AppPort
+              Protocol: tcp
+          Image: !Ref ImageUrl
+          Cpu: !Ref CpuRequirement
+          EntryPoint:
+            - "start-notebook.sh"
+            - !Sub "--NotebookApp.token=${NoteBookToken}"
+            - !Sub "--port=${AppPort}"
+            - "--allow-root"
+          Memory: !Ref MemoryRequirement
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Sub ${AWS::Region}
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-stream-prefix: "ecs_jupyter_notebook"
+
+      Volumes:
+        -
+          EFSVolumeConfiguration:
+            FilesystemId:
+              Fn::ImportValue:
+                Fn::Sub: "${ApplicationName}-FileSystemResource"
+            RootDirectory: "/"
+          Name: "jupyter-efs-volume"
+
+
+  ECSService:
+    DependsOn:
+      - ECSLogStream
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Join ["-", [ !Ref ApplicationName, "notebook-ecs-svc" ] ]
+      LaunchType: EC2
+      TaskDefinition:
+        Ref: ECSTaskDefinition
+      DesiredCount: 1
+      LoadBalancers:
+        - TargetGroupArn:
+            Fn::ImportValue:
+              Fn::Sub: "${ApplicationName}-TargetGroupArn"
+          ContainerPort: !Ref AppPort
+          ContainerName: !Ref ECSContainerName
+      Cluster:
+        Fn::ImportValue:
+          Fn::Sub: "${ApplicationName}-ECSCluster"
